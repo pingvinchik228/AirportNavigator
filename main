@@ -1,0 +1,923 @@
+import heapq
+import tkinter as tk
+from dataclasses import dataclass, field
+from tkinter import messagebox, ttk
+
+BASE_MAP_WIDTH = 1400
+BASE_MAP_HEIGHT = 920
+
+
+CATEGORY_RULES = {
+    "Беременная": {
+        "global_factor": 1.08,
+        "zone_factors": {
+            "Стойка информации": 0.8,
+            "Семейный коридор": 0.5,
+            "Лифт": 0.65,
+            "Саморегистрация": 1.25,
+            "Экспресс-досмотр": 1.45,
+        },
+    },
+    "Ребенок": {
+        "global_factor": 1.06,
+        "zone_factors": {
+            "Стойка информации": 0.9,
+            "Семейный коридор": 0.4,
+            "Саморегистрация": 1.25,
+            "Экспресс-досмотр": 1.35,
+            "Дьюти-фри": 1.05,
+        },
+    },
+    "Пожилой человек": {
+        "global_factor": 1.12,
+        "zone_factors": {
+            "Стойка информации": 0.7,
+            "Регистрация": 0.85,
+            "Семейный коридор": 0.8,
+            "Лифт": 0.5,
+            "Саморегистрация": 1.45,
+            "Экспресс-досмотр": 1.7,
+        },
+    },
+    "С багажом": {
+        "global_factor": 1.09,
+        "zone_factors": {
+            "Стойка информации": 1.05,
+            "Регистрация": 0.8,
+            "Саморегистрация": 1.7,
+            "Лифт": 0.9,
+            "Семейный коридор": 1.25,
+            "Экспресс-досмотр": 1.35,
+            "Багаж drop-off": 0.45,
+        },
+    },
+    "Маломобильный пассажир": {
+        "global_factor": 1.14,
+        "zone_factors": {
+            "Стойка информации": 0.65,
+            "Семейный коридор": 0.95,
+            "Регистрация": 0.85,
+            "Саморегистрация": 1.7,
+            "Лифт": 0.35,
+            "Экспресс-досмотр": 1.8,
+        },
+    },
+}
+
+ZONE_META = {
+    "Вход в терминал": {
+        "type": "entry",
+        "hint": "Главный вход в терминал. Отсюда удобно начинать маршрут к регистрации, досмотру или зоне прилета.",
+    },
+    "Выход в город": {
+        "type": "entry",
+        "hint": "Выход к парковке и городскому транспорту. Подходит как конечная точка для маршрута на выход.",
+    },
+    "Стойка информации": {
+        "type": "service",
+        "hint": "Здесь можно уточнить стойку регистрации, запросить сопровождение или помощь с навигацией.",
+    },
+    "Регистрация": {
+        "type": "core",
+        "hint": "Основная зона регистрации рейсов и выдачи посадочных талонов.",
+    },
+    "Саморегистрация": {
+        "type": "fast",
+        "hint": "Подходит для пассажиров без сложного багажа и с готовым бронированием.",
+    },
+    "Багаж drop-off": {
+        "type": "core",
+        "hint": "Быстрая сдача багажа после онлайн-регистрации или самостоятельного оформления.",
+    },
+    "Досмотр": {
+        "type": "core",
+        "hint": "Стандартная зона контроля безопасности. Подготовьте ручную кладь и документы заранее.",
+    },
+    "Экспресс-досмотр": {
+        "type": "fast",
+        "hint": "Ускоренный проход для пассажиров, которым важна скорость больше, чем комфорт.",
+    },
+    "Семейный коридор": {
+        "type": "service",
+        "hint": "Более спокойный проход для семей и тех, кому нужен мягкий темп движения.",
+    },
+    "Паспортный контроль": {
+        "type": "core",
+        "hint": "Международный контроль перед выходом в стерильную зону и к гейтам.",
+    },
+    "Дьюти-фри": {
+        "type": "lounge",
+        "hint": "Коммерческая зона после контроля. Через нее можно пройти к части выходов на посадку.",
+    },
+    "Лифт": {
+        "type": "service",
+        "hint": "Маршрут без лестниц и лишней пешей нагрузки, особенно удобен для семей и пожилых.",
+    },
+    "Гейт A12": {
+        "type": "gate",
+        "hint": "Выход на посадку в левом крыле терминала.",
+    },
+    "Гейт B4": {
+        "type": "gate",
+        "hint": "Выход на посадку в правом крыле терминала.",
+    },
+}
+
+TERMINAL_SECTIONS = [
+    {"title": "Входная зона", "rect": (60, 560, 430, 860), "fill": "#EEF7FF"},
+    {"title": "Регистрация и багаж", "rect": (470, 560, 870, 860), "fill": "#F8F2FF"},
+    {"title": "Контроль", "rect": (300, 250, 760, 560), "fill": "#F3FFF5"},
+    {"title": "Зона вылета", "rect": (900, 120, 1325, 690), "fill": "#FFF8EF"},
+]
+
+ZONE_LAYOUT = {
+    "Вход в терминал": {"rect": (110, 700, 290, 790)},
+    "Выход в город": {"rect": (120, 595, 300, 680)},
+    "Стойка информации": {"rect": (190, 460, 420, 560)},
+    "Регистрация": {"rect": (520, 665, 800, 785)},
+    "Саморегистрация": {"rect": (1020, 655, 1285, 770)},
+    "Багаж drop-off": {"rect": (560, 515, 820, 610)},
+    "Досмотр": {"rect": (480, 365, 760, 455)},
+    "Экспресс-досмотр": {"rect": (1000, 345, 1265, 455)},
+    "Семейный коридор": {"rect": (230, 275, 470, 375)},
+    "Паспортный контроль": {"rect": (620, 185, 940, 275)},
+    "Дьюти-фри": {"rect": (1010, 205, 1280, 315)},
+    "Лифт": {"rect": (1000, 105, 1170, 190)},
+    "Гейт A12": {"rect": (810, 40, 1010, 110)},
+    "Гейт B4": {"rect": (1160, 40, 1360, 110)},
+}
+
+DISPLAY_LABELS = {
+    "Вход в терминал": "Вход",
+    "Выход в город": "Выход",
+    "Стойка информации": "Стойка\nинформации",
+    "Регистрация": "Регистрация",
+    "Саморегистрация": "Само-рег.",
+    "Багаж drop-off": "Багаж\ndrop-off",
+    "Досмотр": "Досмотр",
+    "Экспресс-досмотр": "Экспресс\nдосмотр",
+    "Семейный коридор": "Семейный\nкоридор",
+    "Паспортный контроль": "Паспортный\nконтроль",
+    "Дьюти-фри": "Дьюти-фри",
+    "Лифт": "Лифт",
+    "Гейт A12": "Гейт A12",
+    "Гейт B4": "Гейт B4",
+}
+
+EDGE_HINTS = {
+    ("Вход в терминал", "Стойка информации"): "Удобный старт, если нужно уточнить стойку регистрации или получить помощь.",
+    ("Вход в терминал", "Регистрация"): "Прямой путь для пассажиров, которые сразу идут к стандартной регистрации.",
+    ("Вход в терминал", "Саморегистрация"): "Самый быстрый вход в терминал для тех, кто хочет оформить все самостоятельно.",
+    ("Вход в терминал", "Выход в город"): "Короткий переход к городскому выходу и парковке.",
+    ("Стойка информации", "Регистрация"): "Сотрудники подскажут нужную стойку и помогут продолжить маршрут.",
+    ("Стойка информации", "Семейный коридор"): "Отсюда удобно перейти в более спокойный коридор для семьи или сопровождаемого пассажира.",
+    ("Выход в город", "Стойка информации"): "Если вы вошли со стороны парковки, здесь легко начать ориентацию по терминалу.",
+    ("Регистрация", "Багаж drop-off"): "После оформления билета можно быстро сдать багаж на отдельной стойке.",
+    ("Регистрация", "Досмотр"): "Стандартный маршрут к зоне контроля безопасности.",
+    ("Саморегистрация", "Багаж drop-off"): "Если регистрация уже пройдена, можно сразу направиться к сдаче багажа.",
+    ("Саморегистрация", "Экспресс-досмотр"): "Самый быстрый переход в контрольную зону для самостоятельных пассажиров.",
+    ("Багаж drop-off", "Досмотр"): "После сдачи багажа логично перейти в общий поток досмотра.",
+    ("Багаж drop-off", "Экспресс-досмотр"): "Можно пойти в ускоренный коридор, если время важнее мягкости маршрута.",
+    ("Досмотр", "Паспортный контроль"): "Классический путь через стандартную проверку безопасности.",
+    ("Досмотр", "Семейный коридор"): "Переход в семейную ветку помогает снизить суету и плотность потока.",
+    ("Экспресс-досмотр", "Паспортный контроль"): "Быстрый возврат в общий поток после ускоренной проверки.",
+    ("Семейный коридор", "Паспортный контроль"): "Этот проход удобнее для семей, сопровождаемых и тех, кому нужен спокойный ритм.",
+    ("Паспортный контроль", "Дьюти-фри"): "После контроля можно пройти через коммерческую зону к части гейтов.",
+    ("Паспортный контроль", "Лифт"): "Лифт помогает сократить пешую нагрузку перед посадкой.",
+    ("Дьюти-фри", "Гейт B4"): "Из duty free удобно выйти к правому гейту.",
+    ("Дьюти-фри", "Гейт A12"): "Через торговую зону можно пройти и к левому крылу вылета.",
+    ("Лифт", "Гейт A12"): "Маршрут без лестниц к ближнему гейту.",
+    ("Лифт", "Гейт B4"): "Маршрут без лестниц к дальнему гейту.",
+    ("Стойка информации", "Выход в город"): "Если цель не вылет, а выход из терминала, это самый понятный путь обратно.",
+}
+
+
+@dataclass
+class Edge:
+    to_node: str
+    base_time: float
+
+
+@dataclass
+class AirportGraph:
+    edges: dict[str, list[Edge]] = field(default_factory=dict)
+
+    def add_node(self, node: str) -> None:
+        self.edges.setdefault(node, [])
+
+    def add_edge(self, from_node: str, to_node: str, base_time: float) -> None:
+        self.add_node(from_node)
+        self.add_node(to_node)
+        self.edges[from_node].append(Edge(to_node=to_node, base_time=base_time))
+
+    def add_connection(self, node_a: str, node_b: str, base_time: float) -> None:
+        self.add_edge(node_a, node_b, base_time)
+        self.add_edge(node_b, node_a, base_time)
+
+
+def zone_center(node: str) -> tuple[float, float]:
+    x1, y1, x2, y2 = ZONE_LAYOUT[node]["rect"]
+    return (x1 + x2) / 2, (y1 + y2) / 2
+
+
+def get_zone_factor(categories: list[str], to_node: str) -> float:
+    factor = 1.0
+    for category in categories:
+        rule = CATEGORY_RULES.get(category, {})
+        factor *= rule.get("zone_factors", {}).get(to_node, 1.0)
+    return factor
+
+
+def get_global_factor(categories: list[str]) -> float:
+    factor = 1.0
+    for category in categories:
+        factor *= CATEGORY_RULES.get(category, {}).get("global_factor", 1.0)
+    return factor
+
+
+def calculate_time(base_time: float, to_node: str, categories: list[str]) -> float:
+    return round(base_time * get_global_factor(categories) * get_zone_factor(categories, to_node), 1)
+
+
+def dijkstra(graph: AirportGraph, start: str, end: str, categories: list[str]) -> tuple[float | None, list[str]]:
+    if start not in graph.edges or end not in graph.edges:
+        return None, []
+
+    queue: list[tuple[float, str, list[str]]] = [(0.0, start, [])]
+    best_times = {start: 0.0}
+
+    while queue:
+        current_time, current_node, path = heapq.heappop(queue)
+        if current_time > best_times.get(current_node, float("inf")):
+            continue
+
+        path = path + [current_node]
+        if current_node == end:
+            return round(current_time, 1), path
+
+        for edge in graph.edges[current_node]:
+            next_time = round(current_time + calculate_time(edge.base_time, edge.to_node, categories), 1)
+            if next_time >= best_times.get(edge.to_node, float("inf")):
+                continue
+
+            best_times[edge.to_node] = next_time
+            heapq.heappush(queue, (next_time, edge.to_node, path))
+
+    return None, []
+
+
+def create_airport_graph() -> AirportGraph:
+    graph = AirportGraph()
+
+    for node in ZONE_LAYOUT:
+        graph.add_node(node)
+
+    graph.add_connection("Вход в терминал", "Стойка информации", 1.6)
+    graph.add_connection("Вход в терминал", "Регистрация", 2.6)
+    graph.add_connection("Вход в терминал", "Саморегистрация", 2.1)
+    graph.add_connection("Вход в терминал", "Выход в город", 1.2)
+    graph.add_connection("Выход в город", "Стойка информации", 1.1)
+    graph.add_connection("Стойка информации", "Регистрация", 1.8)
+    graph.add_connection("Стойка информации", "Семейный коридор", 3.0)
+    graph.add_connection("Регистрация", "Багаж drop-off", 1.3)
+    graph.add_connection("Регистрация", "Досмотр", 2.4)
+    graph.add_connection("Саморегистрация", "Багаж drop-off", 2.0)
+    graph.add_connection("Саморегистрация", "Экспресс-досмотр", 1.5)
+    graph.add_connection("Багаж drop-off", "Досмотр", 1.4)
+    graph.add_connection("Багаж drop-off", "Экспресс-досмотр", 2.0)
+    graph.add_connection("Досмотр", "Паспортный контроль", 2.5)
+    graph.add_connection("Досмотр", "Семейный коридор", 1.6)
+    graph.add_connection("Экспресс-досмотр", "Паспортный контроль", 1.7)
+    graph.add_connection("Семейный коридор", "Паспортный контроль", 2.8)
+    graph.add_connection("Паспортный контроль", "Дьюти-фри", 1.8)
+    graph.add_connection("Паспортный контроль", "Лифт", 1.5)
+    graph.add_connection("Дьюти-фри", "Гейт B4", 1.9)
+    graph.add_connection("Дьюти-фри", "Гейт A12", 2.2)
+    graph.add_connection("Лифт", "Гейт A12", 1.2)
+    graph.add_connection("Лифт", "Гейт B4", 1.7)
+
+    return graph
+
+
+class App:
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
+        self.graph = create_airport_graph()
+        self.current_path: list[str] = []
+        self.category_vars = {name: tk.BooleanVar(value=False) for name in CATEGORY_RULES}
+        self.view_mode = tk.StringVar(value="Только маршрут")
+
+        self.style = ttk.Style()
+        self.style.configure("App.TLabelframe", padding=14)
+        self.style.configure("App.TLabelframe.Label", font=("Segoe UI", 11, "bold"))
+        self.style.configure("App.TCheckbutton", background="#F4F8FF")
+
+        root.title("Навигатор аэропорта")
+        root.geometry("1600x980")
+        root.minsize(1280, 820)
+        root.configure(bg="#DCE8F8")
+        root.state("zoomed")
+
+        self.build_ui()
+        self.draw_empty_state()
+        self.show_empty_sidebar()
+
+    def build_ui(self) -> None:
+        header = tk.Frame(self.root, bg="#DCE8F8")
+        header.pack(fill="x", padx=18, pady=(18, 10))
+
+        tk.Label(
+            header,
+            text="Навигатор терминала аэропорта",
+            font=("Segoe UI", 22, "bold"),
+            bg="#DCE8F8",
+            fg="#133B67",
+        ).pack()
+
+        tk.Label(
+            header,
+            text="Выберите точку старта, цель маршрута и категории пассажиров. Маршрут строится как по макету терминала.",
+            font=("Segoe UI", 10),
+            bg="#DCE8F8",
+            fg="#476A8A",
+        ).pack(pady=(4, 0))
+
+        controls = ttk.LabelFrame(self.root, text="Параметры маршрута", style="App.TLabelframe")
+        controls.pack(fill="x", padx=18, pady=(0, 12))
+        controls.columnconfigure(0, weight=1)
+        controls.columnconfigure(1, weight=1)
+        controls.columnconfigure(2, weight=1)
+        controls.columnconfigure(3, weight=1)
+
+        tk.Label(controls, text="Откуда", bg="#F4F8FF", fg="#1F4162", font=("Segoe UI", 10, "bold")).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            padx=(4, 10),
+            pady=(2, 6),
+        )
+        self.start_var = tk.StringVar(value="Вход в терминал")
+        ttk.Combobox(
+            controls,
+            textvariable=self.start_var,
+            state="readonly",
+            values=list(ZONE_LAYOUT),
+        ).grid(row=1, column=0, sticky="ew", padx=(4, 10))
+
+        tk.Label(controls, text="Куда", bg="#F4F8FF", fg="#1F4162", font=("Segoe UI", 10, "bold")).grid(
+            row=0,
+            column=1,
+            sticky="w",
+            padx=(10, 10),
+            pady=(2, 6),
+        )
+        self.destination_var = tk.StringVar(value="Гейт A12")
+        ttk.Combobox(
+            controls,
+            textvariable=self.destination_var,
+            state="readonly",
+            values=list(ZONE_LAYOUT),
+        ).grid(row=1, column=1, sticky="ew", padx=(10, 10))
+
+        tk.Label(controls, text="Режим схемы", bg="#F4F8FF", fg="#1F4162", font=("Segoe UI", 10, "bold")).grid(
+            row=0,
+            column=2,
+            sticky="w",
+            padx=(10, 10),
+            pady=(2, 6),
+        )
+        ttk.Combobox(
+            controls,
+            textvariable=self.view_mode,
+            state="readonly",
+            values=["Весь терминал", "Только маршрут"],
+        ).grid(row=1, column=2, sticky="ew", padx=(10, 10))
+
+        action_card = tk.Frame(controls, bg="#F4F8FF")
+        action_card.grid(row=0, column=3, rowspan=2, sticky="nsew", padx=(10, 4))
+        tk.Button(
+            action_card,
+            text="Построить маршрут",
+            command=self.calculate,
+            bg="#174A7C",
+            fg="white",
+            activebackground="#245F98",
+            activeforeground="white",
+            relief="flat",
+            bd=0,
+            padx=22,
+            pady=10,
+            font=("Segoe UI", 10, "bold"),
+            cursor="hand2",
+        ).pack(anchor="e", pady=(18, 0))
+
+        categories = tk.Frame(self.root, bg="#F4F8FF", bd=1, relief="solid")
+        categories.pack(fill="x", padx=18, pady=(0, 12))
+
+        tk.Label(
+            categories,
+            text="Категории пассажиров",
+            font=("Segoe UI", 11, "bold"),
+            bg="#F4F8FF",
+            fg="#133B67",
+        ).grid(row=0, column=0, columnspan=5, sticky="w", padx=14, pady=(12, 8))
+
+        tk.Label(
+            categories,
+            text="Можно выбрать несколько сразу: например, ребенок + пожилой человек или беременная + с багажом.",
+            font=("Segoe UI", 9),
+            bg="#F4F8FF",
+            fg="#5C7691",
+        ).grid(row=1, column=0, columnspan=5, sticky="w", padx=14, pady=(0, 10))
+
+        for index, name in enumerate(self.category_vars):
+            ttk.Checkbutton(
+                categories,
+                text=name,
+                variable=self.category_vars[name],
+                style="App.TCheckbutton",
+                command=self.calculate,
+            ).grid(row=2 + index // 3, column=index % 3, sticky="w", padx=14, pady=(0, 10))
+
+        content = tk.Frame(self.root, bg="#DCE8F8")
+        content.pack(fill="both", expand=True, padx=18, pady=(0, 18))
+        content.columnconfigure(0, weight=8)
+        content.columnconfigure(1, weight=3)
+        content.rowconfigure(0, weight=1)
+
+        self.map_card = tk.Frame(content, bg="#FFFFFF", bd=0, highlightthickness=0)
+        self.map_card.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+
+        self.canvas = tk.Canvas(self.map_card, bg="#FFFFFF", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True, padx=10, pady=10)
+        self.canvas.bind("<Configure>", self.on_canvas_resize)
+
+        self.sidebar = tk.Frame(content, bg="#EDF4FF", padx=12, pady=12)
+        self.sidebar.grid(row=0, column=1, sticky="nsew")
+        self.sidebar.grid_propagate(False)
+
+    def get_selected_categories(self) -> list[str]:
+        return [name for name, variable in self.category_vars.items() if variable.get()]
+
+    def on_canvas_resize(self, _event: tk.Event) -> None:
+        if self.current_path:
+            self.draw_route(self.current_path)
+            return
+
+        self.draw_empty_state()
+
+    def draw_empty_state(self) -> None:
+        self.canvas.delete("all")
+        width = max(self.canvas.winfo_width(), 760)
+        height = max(self.canvas.winfo_height(), 620)
+
+        self.canvas.create_rectangle(0, 0, width, height, fill="#FFFFFF", outline="")
+        self.canvas.create_rectangle(6, 6, width - 6, height - 6, fill="#F7FAFF", outline="")
+
+        self.canvas.create_text(
+            width / 2,
+            height / 2 - 36,
+            text="Схема маршрута появится здесь",
+            font=("Segoe UI", 20, "bold"),
+            fill="#173E69",
+        )
+        self.canvas.create_text(
+            width / 2,
+            height / 2 + 8,
+            text="Выберите старт, цель и категории пассажиров,\nзатем нажмите «Построить маршрут».",
+            font=("Segoe UI", 11),
+            fill="#58718C",
+            justify="center",
+        )
+
+    def show_empty_sidebar(self) -> None:
+        for widget in self.sidebar.winfo_children():
+            widget.destroy()
+
+        card = tk.Frame(self.sidebar, bg="white", bd=1, relief="solid")
+        card.pack(fill="x", pady=(0, 12))
+
+        tk.Label(
+            card,
+            text="Маршрут еще не построен",
+            font=("Segoe UI", 13, "bold"),
+            bg="white",
+            fg="#133B67",
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+
+        tk.Label(
+            card,
+            text="Сначала выберите:\n• откуда вы идете\n• куда нужно попасть\n• категории пассажиров, если они важны",
+            justify="left",
+            bg="white",
+            fg="#47627D",
+            wraplength=360,
+        ).pack(anchor="w", padx=12, pady=(0, 12))
+
+    def get_visible_bounds(self, path: list[str]) -> tuple[float, float, float, float]:
+        if self.view_mode.get() != "Только маршрут" or len(path) < 2:
+            return 0.0, 0.0, BASE_MAP_WIDTH, BASE_MAP_HEIGHT
+
+        rects = [ZONE_LAYOUT[node]["rect"] for node in path if node in ZONE_LAYOUT]
+        min_x = min(rect[0] for rect in rects)
+        min_y = min(rect[1] for rect in rects)
+        max_x = max(rect[2] for rect in rects)
+        max_y = max(rect[3] for rect in rects)
+        padding_x = 130
+        padding_y = 110
+        return (
+            max(0.0, min_x - padding_x),
+            max(0.0, min_y - padding_y),
+            min(BASE_MAP_WIDTH, max_x + padding_x),
+            min(BASE_MAP_HEIGHT, max_y + padding_y),
+        )
+
+    def scale_point(
+        self,
+        x: float,
+        y: float,
+        width: int,
+        height: int,
+        bounds: tuple[float, float, float, float],
+    ) -> tuple[float, float]:
+        min_x, min_y, max_x, max_y = bounds
+        source_width = max(max_x - min_x, 1)
+        source_height = max(max_y - min_y, 1)
+        scale_x = (width - 20) / source_width
+        scale_y = (height - 24) / source_height
+        scale = min(scale_x, scale_y)
+        offset_x = (width - source_width * scale) / 2
+        offset_y = (height - source_height * scale) / 2
+        return offset_x + (x - min_x) * scale, offset_y + (y - min_y) * scale
+
+    def scale_rect(
+        self,
+        rect: tuple[int, int, int, int],
+        width: int,
+        height: int,
+        bounds: tuple[float, float, float, float],
+    ) -> tuple[float, float, float, float]:
+        x1, y1 = self.scale_point(rect[0], rect[1], width, height, bounds)
+        x2, y2 = self.scale_point(rect[2], rect[3], width, height, bounds)
+        return x1, y1, x2, y2
+
+    def draw_terminal(self, path: list[str]) -> None:
+        self.canvas.delete("all")
+        width = max(self.canvas.winfo_width(), 760)
+        height = max(self.canvas.winfo_height(), 620)
+        bounds = self.get_visible_bounds(path)
+        route_only = self.view_mode.get() == "Только маршрут" and len(path) >= 2
+
+        if route_only:
+            self.draw_route_focus(path, width, height)
+            return
+
+        self.canvas.create_rectangle(0, 0, width, height, fill="#FFFFFF", outline="")
+        self.canvas.create_rectangle(6, 6, width - 6, height - 6, fill="#F6FAFF", outline="")
+
+        self.canvas.create_text(
+            width / 2,
+            28,
+            text="Маршрут по терминалу" if route_only else "Макет терминала",
+            font=("Segoe UI", 16, "bold"),
+            fill="#173E69",
+        )
+
+        if not route_only:
+            for section in TERMINAL_SECTIONS:
+                x1, y1, x2, y2 = self.scale_rect(section["rect"], width, height, bounds)
+                self.canvas.create_rectangle(x1, y1, x2, y2, fill=section["fill"], outline="#D8E4F4", width=2)
+                self.canvas.create_text(
+                    x1 + 16,
+                    y1 + 16,
+                    text=section["title"],
+                    anchor="w",
+                    font=("Segoe UI", 9, "bold"),
+                    fill="#4E6A86",
+                )
+
+        path_edges = {(path[i], path[i + 1]) for i in range(len(path) - 1)}
+        path_edges |= {(path[i + 1], path[i]) for i in range(len(path) - 1)}
+        visible_nodes = set(path) if route_only else set(ZONE_LAYOUT)
+
+        for node, neighbors in self.graph.edges.items():
+            if node not in visible_nodes:
+                continue
+            x1, y1 = zone_center(node)
+            sx1, sy1 = self.scale_point(x1, y1, width, height, bounds)
+
+            for edge in neighbors:
+                if edge.to_node not in visible_nodes:
+                    continue
+                x2, y2 = zone_center(edge.to_node)
+                sx2, sy2 = self.scale_point(x2, y2, width, height, bounds)
+                is_active = (node, edge.to_node) in path_edges
+                self.canvas.create_line(
+                    sx1,
+                    sy1,
+                    sx2,
+                    sy2,
+                    fill="#D81B60" if is_active else "#D7E3F3",
+                    width=8 if is_active else 2,
+                    capstyle=tk.ROUND,
+                )
+
+        for node, meta in ZONE_META.items():
+            if node not in visible_nodes:
+                continue
+            x1, y1, x2, y2 = self.scale_rect(ZONE_LAYOUT[node]["rect"], width, height, bounds)
+            fill, outline = self.get_zone_colors(meta["type"], node in path, route_only)
+            self.canvas.create_rectangle(x1, y1, x2, y2, fill=fill, outline=outline, width=2)
+            self.canvas.create_text(
+                (x1 + x2) / 2,
+                (y1 + y2) / 2,
+                text=DISPLAY_LABELS.get(node, node),
+                font=("Segoe UI", 8, "bold"),
+                fill="#1C3552",
+                width=max(x2 - x1 - 16, 60),
+            )
+
+    def draw_route_focus(self, path: list[str], width: int, height: int) -> None:
+        self.canvas.create_rectangle(0, 0, width, height, fill="#FFFFFF", outline="")
+        self.canvas.create_rectangle(6, 6, width - 6, height - 6, fill="#F7FAFF", outline="")
+        self.canvas.create_text(
+            width / 2,
+            28,
+            text="Маршрут по терминалу",
+            font=("Segoe UI", 17, "bold"),
+            fill="#173E69",
+        )
+
+        positions = self.build_focus_positions(path, width, height)
+
+        for index in range(len(path) - 1):
+            x1, y1 = positions[path[index]]
+            x2, y2 = positions[path[index + 1]]
+            self.canvas.create_line(
+                x1,
+                y1,
+                x2,
+                y2,
+                fill="#D81B60",
+                width=8,
+                capstyle=tk.ROUND,
+                joinstyle=tk.ROUND,
+                smooth=True,
+            )
+            self.draw_arrow_head(x1, y1, x2, y2)
+
+        for index, node in enumerate(path):
+            self.draw_focus_node(node, positions[node], width, is_start=index == 0, is_end=index == len(path) - 1)
+
+    def build_focus_positions(self, path: list[str], width: int, height: int) -> dict[str, tuple[float, float]]:
+        top = 105
+        bottom = height - 75
+        usable_height = max(bottom - top, 240)
+        step_y = usable_height / max(len(path) - 1, 1)
+        left = 180
+        right = width - 180
+        center = width / 2
+        columns = [left, center, right, center]
+        positions: dict[str, tuple[float, float]] = {}
+
+        for index, node in enumerate(path):
+            x = columns[index % len(columns)]
+            y = top + index * step_y
+            positions[node] = (x, y)
+
+        return positions
+
+    def draw_focus_node(self, node: str, center: tuple[float, float], width: int, is_start: bool, is_end: bool) -> None:
+        x, y = center
+        box_width = min(max(width * 0.2, 170), 250)
+        box_height = 58
+        fill = "#FFFFFF"
+        outline = "#CFDCEE"
+        if is_start:
+            fill = "#E5F3FF"
+            outline = "#4B8ED8"
+        elif is_end:
+            fill = "#FDE8F1"
+            outline = "#D81B60"
+        else:
+            zone_type = ZONE_META[node]["type"]
+            fill, outline = self.get_zone_colors(zone_type, False, False)
+
+        self.canvas.create_rectangle(
+            x - box_width / 2,
+            y - box_height / 2,
+            x + box_width / 2,
+            y + box_height / 2,
+            fill=fill,
+            outline=outline,
+            width=2,
+        )
+        self.canvas.create_text(
+            x,
+            y,
+            text=DISPLAY_LABELS.get(node, node),
+            font=("Segoe UI", 10, "bold"),
+            fill="#173552",
+            width=box_width - 20,
+        )
+
+    def draw_arrow_head(self, x1: float, y1: float, x2: float, y2: float) -> None:
+        dx = x2 - x1
+        dy = y2 - y1
+        length = (dx * dx + dy * dy) ** 0.5
+        if length == 0:
+            return
+        ux = dx / length
+        uy = dy / length
+        size = 10
+        px = x2 - ux * 16
+        py = y2 - uy * 16
+        left_x = px - uy * size
+        left_y = py + ux * size
+        right_x = px + uy * size
+        right_y = py - ux * size
+        self.canvas.create_polygon(
+            x2,
+            y2,
+            left_x,
+            left_y,
+            right_x,
+            right_y,
+            fill="#D81B60",
+            outline="#D81B60",
+        )
+
+    def get_zone_colors(self, zone_type: str, in_path: bool, route_only: bool) -> tuple[str, str]:
+        palette = {
+            "entry": ("#DCEEFF", "#75A7D8"),
+            "service": ("#E0F5E7", "#63A46D"),
+            "core": ("#E8F0FF", "#6B93D6"),
+            "fast": ("#FFF0D9", "#E89A41"),
+            "lounge": ("#FFF6E8", "#D9B06D"),
+            "gate": ("#F4E8FF", "#A373D1"),
+        }
+        fill, outline = palette[zone_type]
+        if in_path:
+            return "#FDE0EC", "#D81B60"
+        if route_only:
+            return "#F7FAFF", "#B8C9DE"
+        return fill, outline
+
+    def draw_route(self, path: list[str]) -> None:
+        self.current_path = path
+        self.draw_terminal(path)
+
+    def get_route_details(self, path: list[str], categories: list[str]) -> tuple[list[tuple[str, float, str]], float]:
+        details: list[tuple[str, float, str]] = []
+        total = 0.0
+
+        for index in range(len(path) - 1):
+            current = path[index]
+            next_node = path[index + 1]
+
+            for edge in self.graph.edges[current]:
+                if edge.to_node != next_node:
+                    continue
+
+                step_time = calculate_time(edge.base_time, next_node, categories)
+                hint = EDGE_HINTS.get((current, next_node), ZONE_META[next_node]["hint"])
+                total += step_time
+                details.append((next_node, step_time, hint))
+                break
+
+        return details, round(total, 1)
+
+    def show_sidebar(self, details: list[tuple[str, float, str]], total: float, path: list[str], categories: list[str]) -> None:
+        for widget in self.sidebar.winfo_children():
+            widget.destroy()
+
+        summary_card = tk.Frame(self.sidebar, bg="white", bd=1, relief="solid")
+        summary_card.pack(fill="x", pady=(0, 12))
+
+        tk.Label(
+            summary_card,
+            text="Сводка маршрута",
+            font=("Segoe UI", 13, "bold"),
+            bg="white",
+            fg="#133B67",
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+
+        categories_text = ", ".join(categories) if categories else "Обычный пассажир"
+        summary_lines = [
+            f"Старт: {path[0]}",
+            f"Цель: {path[-1]}",
+            f"Категории: {categories_text}",
+            f"Общее время: {total} мин",
+        ]
+        for line in summary_lines:
+            tk.Label(
+                summary_card,
+                text=line,
+                anchor="w",
+                justify="left",
+                bg="white",
+                fg="#39536D",
+                wraplength=360,
+            ).pack(fill="x", padx=12, pady=2)
+
+        legend_card = tk.Frame(self.sidebar, bg="white", bd=1, relief="solid")
+        legend_card.pack(fill="x", pady=(0, 12))
+
+        tk.Label(
+            legend_card,
+            text="Обозначения на макете",
+            font=("Segoe UI", 12, "bold"),
+            bg="white",
+            fg="#133B67",
+        ).pack(anchor="w", padx=12, pady=(12, 8))
+
+        legend_items = [
+            ("#DCEEFF", "Входы и выходы"),
+            ("#E0F5E7", "Сервисы и помощь"),
+            ("#E8F0FF", "Основные контрольные зоны"),
+            ("#FFF0D9", "Быстрые альтернативы"),
+            ("#FDE0EC", "Выбранный маршрут"),
+        ]
+        for color, label in legend_items:
+            row = tk.Frame(legend_card, bg="white")
+            row.pack(fill="x", padx=12, pady=4)
+            badge = tk.Canvas(row, width=18, height=18, bg="white", highlightthickness=0)
+            badge.pack(side="left")
+            badge.create_rectangle(2, 2, 16, 16, fill=color, outline="")
+            tk.Label(row, text=label, bg="white", fg="#35506B").pack(side="left", padx=8)
+
+        tk.Label(
+            self.sidebar,
+            text="Маршрут по шагам",
+            font=("Segoe UI", 15, "bold"),
+            bg="#EDF4FF",
+            fg="#133B67",
+        ).pack(anchor="w", pady=(4, 8))
+
+        route_text = " → ".join(path)
+        tk.Label(
+            self.sidebar,
+            text=route_text,
+            wraplength=380,
+            justify="left",
+            bg="#EDF4FF",
+            fg="#456887",
+        ).pack(anchor="w", pady=(0, 10))
+
+        steps_container = tk.Frame(self.sidebar, bg="#EDF4FF")
+        steps_container.pack(fill="both", expand=True)
+
+        for place, time_value, hint in details:
+            card = tk.Frame(steps_container, bg="white", bd=1, relief="solid")
+            card.pack(fill="x", pady=6)
+
+            tk.Label(
+                card,
+                text=place,
+                font=("Segoe UI", 11, "bold"),
+                bg="white",
+            ).pack(anchor="w", padx=12, pady=(10, 2))
+
+            tk.Label(
+                card,
+                text=f"{time_value} мин",
+                fg="#1262C6",
+                bg="white",
+                font=("Segoe UI", 10, "bold"),
+            ).pack(anchor="w", padx=12)
+
+            tk.Label(
+                card,
+                text=hint,
+                wraplength=350,
+                justify="left",
+                fg="#5A6E83",
+                bg="white",
+            ).pack(anchor="w", padx=12, pady=(4, 10))
+
+    def calculate(self) -> None:
+        start = self.start_var.get()
+        destination = self.destination_var.get()
+        categories = self.get_selected_categories()
+
+        if start == destination:
+            messagebox.showinfo("Маршрут", "Точка старта и назначения совпадают.")
+            self.current_path = [start]
+            self.draw_route([start])
+            self.show_sidebar([], 0.0, [start], categories)
+            return
+
+        total_time, path = dijkstra(self.graph, start, destination, categories)
+        if total_time is None or not path:
+            messagebox.showerror("Ошибка", "Не удалось построить маршрут между выбранными точками.")
+            return
+
+        self.draw_route(path)
+        details, total = self.get_route_details(path, categories)
+        self.show_sidebar(details, total, path, categories)
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    App(root)
+    root.mainloop()
